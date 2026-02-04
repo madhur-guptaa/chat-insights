@@ -1,133 +1,106 @@
-import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  Legend,
-} from 'recharts';
-import { SentimentTimeline } from '@/lib/sentimentAnalyzer';
-import { format, parseISO } from 'date-fns';
+import { Bar, BarChart, CartesianGrid, XAxis, YAxis, Line, ReferenceDot, ResponsiveContainer } from 'recharts';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart';
+import { useMemo } from 'react';
+
+interface EnrichedMessage {
+    timestamp: Date;
+    sentiment: { label: string; score: number; };
+    rolling_avg_sentiment: number;
+    is_negativity_cluster: boolean;
+}
 
 interface SentimentChartProps {
-  data: SentimentTimeline[];
+  data: EnrichedMessage[];
 }
 
 export function SentimentChart({ data }: SentimentChartProps) {
-  // Aggregate by week if too many data points
-  const chartData = data.length > 60 ? aggregateByWeek(data) : data;
-  
-  return (
-    <div className="chart-container fade-in">
-      <div className="mb-6">
-        <h3 className="text-xl font-semibold text-foreground">Sentiment Over Time</h3>
-        <p className="text-sm text-muted-foreground mt-1">
-          Track the emotional flow of your conversations
-        </p>
-      </div>
-      
-      <div className="h-[400px] w-full">
-        <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-            <defs>
-              <linearGradient id="positiveGradient" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="hsl(166 76% 48%)" stopOpacity={0.4} />
-                <stop offset="95%" stopColor="hsl(166 76% 48%)" stopOpacity={0} />
-              </linearGradient>
-              <linearGradient id="negativeGradient" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="hsl(12 76% 61%)" stopOpacity={0.4} />
-                <stop offset="95%" stopColor="hsl(12 76% 61%)" stopOpacity={0} />
-              </linearGradient>
-            </defs>
-            
-            <CartesianGrid strokeDasharray="3 3" stroke="hsl(222 30% 18%)" />
-            
-            <XAxis 
-              dataKey="date" 
-              stroke="hsl(215 20% 55%)"
-              fontSize={12}
-              tickFormatter={(value) => {
-                try {
-                  return format(parseISO(value), 'MMM d');
-                } catch {
-                  return value;
-                }
-              }}
-            />
-            
-            <YAxis 
-              stroke="hsl(215 20% 55%)"
-              fontSize={12}
-            />
-            
-            <Tooltip
-              contentStyle={{
-                backgroundColor: 'hsl(222 47% 10%)',
-                border: '1px solid hsl(222 30% 18%)',
-                borderRadius: '12px',
-                padding: '12px',
-              }}
-              labelStyle={{ color: 'hsl(210 40% 98%)' }}
-              labelFormatter={(value) => {
-                try {
-                  return format(parseISO(value), 'MMMM d, yyyy');
-                } catch {
-                  return value;
-                }
-              }}
-            />
-            
-            <Legend 
-              wrapperStyle={{ paddingTop: '20px' }}
-            />
-            
-            <Area
-              type="monotone"
-              dataKey="positive"
-              name="Positive"
-              stroke="hsl(166 76% 48%)"
-              fill="url(#positiveGradient)"
-              strokeWidth={2}
-            />
-            
-            <Area
-              type="monotone"
-              dataKey="negative"
-              name="Negative"
-              stroke="hsl(12 76% 61%)"
-              fill="url(#negativeGradient)"
-              strokeWidth={2}
-            />
-          </AreaChart>
-        </ResponsiveContainer>
-      </div>
-    </div>
-  );
-}
+  const { chartData, negativityPoints } = useMemo(() => {
+    const dailyData: { [key: string]: { positive: number; negative: number; neutral: number; count: number; totalScore: number } } = {};
+    const negativityPoints: { timestamp: number; score: number }[] = [];
 
-function aggregateByWeek(data: SentimentTimeline[]): SentimentTimeline[] {
-  const weeks: Record<string, SentimentTimeline[]> = {};
-  
-  data.forEach(d => {
-    const date = parseISO(d.date);
-    const weekStart = new Date(date);
-    weekStart.setDate(date.getDate() - date.getDay());
-    const weekKey = weekStart.toISOString().split('T')[0];
-    
-    if (!weeks[weekKey]) {
-      weeks[weekKey] = [];
-    }
-    weeks[weekKey].push(d);
-  });
-  
-  return Object.entries(weeks).map(([date, items]) => ({
-    date,
-    positive: items.reduce((sum, i) => sum + i.positive, 0),
-    negative: items.reduce((sum, i) => sum + i.negative, 0),
-    neutral: items.reduce((sum, i) => sum + i.neutral, 0),
-    avgScore: items.reduce((sum, i) => sum + i.avgScore, 0) / items.length,
-    messageCount: items.reduce((sum, i) => sum + i.messageCount, 0),
-  }));
+    data.forEach(msg => {
+      const date = msg.timestamp.toISOString().split('T')[0];
+      if (!dailyData[date]) {
+        dailyData[date] = { positive: 0, negative: 0, neutral: 0, count: 0, totalScore: 0 };
+      }
+      if (msg.sentiment.label === 'POSITIVE') dailyData[date].positive++;
+      else if (msg.sentiment.label === 'NEGATIVE') dailyData[date].negative++;
+      else dailyData[date].neutral++;
+      
+      dailyData[date].count++;
+      dailyData[date].totalScore += msg.sentiment.label === 'POSITIVE' ? msg.sentiment.score : -msg.sentiment.score;
+
+      if (msg.is_negativity_cluster) {
+        negativityPoints.push({ timestamp: msg.timestamp.getTime(), score: msg.sentiment.score });
+      }
+    });
+
+    const chartData = Object.keys(dailyData).map(date => ({
+      date,
+      ...dailyData[date],
+      avgScore: dailyData[date].totalScore / dailyData[date].count,
+    })).sort((a, b) => a.date.localeCompare(b.date));
+
+    return { chartData, negativityPoints };
+  }, [data]);
+
+  const rollingAvgData = useMemo(() => {
+      // Downsample for performance if too many points
+      const step = Math.max(1, Math.floor(data.length / 300));
+      return data.filter((_, i) => i % step === 0).map(msg => ({
+          timestamp: msg.timestamp.getTime(),
+          rolling_avg: msg.rolling_avg_sentiment
+      }));
+  }, [data]);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Sentiment Timeline</CardTitle>
+        <CardDescription>Daily sentiment bars with a smoothed rolling average of the conversation's mood. Red dots indicate potential communication breakdowns.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <ChartContainer config={{}} className="w-full h-[300px]">
+          <ResponsiveContainer>
+            <BarChart data={chartData} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              <XAxis 
+                dataKey="date" 
+                tickFormatter={(tick) => new Date(tick).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+              />
+              <YAxis yAxisId="left" orientation="left" stroke="#8884d8" />
+              <YAxis yAxisId="right" orientation="right" stroke="#82ca9d" domain={[-1, 1]} />
+              <ChartTooltip content={<ChartTooltipContent />} />
+              
+              <Bar yAxisId="left" dataKey="positive" stackId="a" fill="hsl(var(--chart-2))" />
+              <Bar yAxisId="left" dataKey="negative" stackId="a" fill="hsl(var(--chart-1))" />
+
+              <Line
+                yAxisId="right"
+                type="monotone"
+                data={rollingAvgData}
+                dataKey="rolling_avg"
+                stroke="hsl(var(--primary))"
+                strokeWidth={2}
+                dot={false}
+              />
+              
+              {negativityPoints.map((p, i) => (
+                <ReferenceDot
+                  key={i}
+                  yAxisId="right"
+                  x={new Date(p.timestamp).toISOString().split('T')[0]}
+                  y={p.score}
+                  r={5}
+                  fill="hsl(var(--destructive))"
+                  stroke="none"
+                />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartContainer>
+      </CardContent>
+    </Card>
+  );
 }

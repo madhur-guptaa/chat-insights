@@ -16,10 +16,13 @@ export interface ParsedChat {
 
 // WhatsApp export formats vary by region/device
 // Common formats:
+// [YYYY-MM-DD, HH:MM:SS] Sender: Message
 // [DD/MM/YYYY, HH:MM:SS] Sender: Message
 // DD/MM/YYYY, HH:MM - Sender: Message
 // MM/DD/YY, HH:MM AM/PM - Sender: Message
 const MESSAGE_PATTERNS = [
+  // Format: [YYYY-MM-DD, HH:MM:SS] Sender: Message
+  /^\[(\d{4}-\d{1,2}-\d{1,2}),?\s*(\d{1,2}:\d{2}:\d{2})\]\s*([^:]+):\s*(.*)$/i,
   // Format: [DD/MM/YYYY, HH:MM:SS] Sender: Message
   /^\[(\d{1,2}\/\d{1,2}\/\d{2,4}),?\s*(\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?)\]\s*([^:]+):\s*(.*)$/i,
   // Format: DD/MM/YYYY, HH:MM - Sender: Message
@@ -30,31 +33,34 @@ const MESSAGE_PATTERNS = [
 
 function parseDateTime(dateStr: string, timeStr: string): Date | null {
   try {
-    // Try different date formats
-    const dateParts = dateStr.split('/');
+    const dateParts = dateStr.includes('/') ? dateStr.split('/') : dateStr.split('-');
     if (dateParts.length !== 3) return null;
 
     let day: number, month: number, year: number;
-    
-    // Check if first part could be month (1-12) or day (1-31)
-    const first = parseInt(dateParts[0]);
-    const second = parseInt(dateParts[1]);
-    
-    // If first > 12, it's definitely day/month/year
-    if (first > 12) {
-      day = first;
-      month = second - 1;
-      year = parseInt(dateParts[2]);
-    } else if (second > 12) {
-      // month/day/year format
-      month = first - 1;
-      day = second;
-      year = parseInt(dateParts[2]);
+
+    if (dateStr.includes('-')) {
+      // YYYY-MM-DD format
+      year = parseInt(dateParts[0]);
+      month = parseInt(dateParts[1]) - 1;
+      day = parseInt(dateParts[2]);
     } else {
-      // Assume day/month/year (more common internationally)
-      day = first;
-      month = second - 1;
-      year = parseInt(dateParts[2]);
+      // Original logic for slash-separated dates
+      const first = parseInt(dateParts[0]);
+      const second = parseInt(dateParts[1]);
+
+      if (first > 12) { // DD/MM/YYYY
+        day = first;
+        month = second - 1;
+        year = parseInt(dateParts[2]);
+      } else if (second > 12) { // MM/DD/YYYY
+        month = first - 1;
+        day = second;
+        year = parseInt(dateParts[2]);
+      } else { // Ambiguous, assume DD/MM/YYYY (more common internationally)
+        day = first;
+        month = second - 1;
+        year = parseInt(dateParts[2]);
+      }
     }
 
     // Handle 2-digit years
@@ -63,12 +69,13 @@ function parseDateTime(dateStr: string, timeStr: string): Date | null {
     }
 
     // Parse time
-    let hours = 0, minutes = 0;
+    let hours = 0, minutes = 0, seconds = 0;
     const timeParts = timeStr.trim().match(/(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*(AM|PM))?/i);
     
     if (timeParts) {
       hours = parseInt(timeParts[1]);
       minutes = parseInt(timeParts[2]);
+      seconds = timeParts[3] ? parseInt(timeParts[3]) : 0;
       
       // Handle AM/PM
       const ampm = timeParts[4];
@@ -81,7 +88,7 @@ function parseDateTime(dateStr: string, timeStr: string): Date | null {
       }
     }
 
-    return new Date(year, month, day, hours, minutes);
+    return new Date(year, month, day, hours, minutes, seconds);
   } catch {
     return null;
   }
@@ -118,7 +125,8 @@ export function parseWhatsAppChat(content: string): ParsedChat {
               !trimmedSender.includes('created group') &&
               !trimmedSender.includes('added') &&
               !trimmedSender.includes('left') &&
-              !trimmedSender.includes('changed')) {
+              !trimmedSender.includes('changed') &&
+              !trimmedMessage.includes('is a contact.')) { // Added to filter out contact card messages
             
             participantsSet.add(trimmedSender);
             messagesByParticipant[trimmedSender] = (messagesByParticipant[trimmedSender] || 0) + 1;
@@ -155,11 +163,12 @@ export function parseWhatsAppChat(content: string): ParsedChat {
   const participants = Array.from(participantsSet);
   const sortedMessages = messages.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
   
+  const hasMessages = sortedMessages.length > 0;
   return {
     messages: sortedMessages,
     participants,
-    startDate: sortedMessages[0]?.timestamp || new Date(),
-    endDate: sortedMessages[sortedMessages.length - 1]?.timestamp || new Date(),
+    startDate: hasMessages ? sortedMessages[0].timestamp : new Date(),
+    endDate: hasMessages ? sortedMessages[sortedMessages.length - 1].timestamp : new Date(),
     totalMessages: sortedMessages.length,
     messagesByParticipant,
   };
